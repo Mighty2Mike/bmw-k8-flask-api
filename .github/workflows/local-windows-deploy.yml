@@ -177,40 +177,44 @@ jobs:
       # ── Install Terraform (manual binary install — no cloud auth needed) ───
       # We install manually so we control the exact version without relying
       # on HashiCorp's setup-terraform action (which may need TFCB tokens).
-      - name: Install Terraform ${{ env.TERRAFORM_VERSION }}
-        run: |
-          set -euo pipefail
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      # - name: Install Terraform ${{ env.TERRAFORM_VERSION }}
+      #   run: |
+      #     set -euo pipefail
 
-          TF_VERSION="${{ env.TERRAFORM_VERSION }}"
-          TF_ARCH="linux_amd64"
-          TF_ZIP="terraform_${TF_VERSION}_${TF_ARCH}.zip"
-          TF_URL="https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}"
-          TF_SHA_URL="${TF_URL%zip}SHA256SUMS"
+      #     TF_VERSION="${{ env.TERRAFORM_VERSION }}"
+      #     TF_ARCH="linux_amd64"
+      #     TF_ZIP="terraform_${TF_VERSION}_${TF_ARCH}.zip"
+      #     TF_URL="https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}"
+      #     TF_SHA_URL="${TF_URL%zip}SHA256SUMS"
 
-          echo "📥 Downloading Terraform ${TF_VERSION}..."
-          echo "   URL: ${TF_URL}"
+      #     echo "📥 Downloading Terraform ${TF_VERSION}..."
+      #     echo "   URL: ${TF_URL}"
 
-          # Download binary and SHA256 checksum file
-          curl -fsSL "${TF_URL}"     -o /tmp/${TF_ZIP}
-          curl -fsSL "${TF_SHA_URL}" -o /tmp/terraform_SHA256SUMS
+      #     # Download binary and SHA256 checksum file
+      #     curl -fsSL "${TF_URL}"     -o /tmp/${TF_ZIP}
+      #     curl -fsSL "${TF_SHA_URL}" -o /tmp/terraform_SHA256SUMS
 
-          echo ""
-          echo "🔐 Verifying SHA256 checksum..."
-          cd /tmp
-          grep "${TF_ZIP}" terraform_SHA256SUMS | sha256sum --check --status
-          echo "✅ Checksum verified"
+      #     echo ""
+      #     echo "🔐 Verifying SHA256 checksum..."
+      #     cd /tmp
+      #     grep "${TF_ZIP}" terraform_SHA256SUMS | sha256sum --check --status
+      #     echo "✅ Checksum verified"
 
-          echo ""
-          echo "📦 Installing to /usr/local/bin/terraform..."
-          unzip -q /tmp/${TF_ZIP} -d /tmp/terraform_extracted
-          sudo install -m 755 /tmp/terraform_extracted/terraform /usr/local/bin/terraform
+      #     echo ""
+      #     echo "📦 Installing to /usr/local/bin/terraform..."
+      #     unzip -q /tmp/${TF_ZIP} -d /tmp/terraform_extracted
+      #     sudo install -m 755 /tmp/terraform_extracted/terraform /usr/local/bin/terraform
 
-          # Cleanup
-          rm -rf /tmp/${TF_ZIP} /tmp/terraform_SHA256SUMS /tmp/terraform_extracted
+      #     # Cleanup
+      #     rm -rf /tmp/${TF_ZIP} /tmp/terraform_SHA256SUMS /tmp/terraform_extracted
 
-          echo ""
-          echo "✅ Terraform installed:"
-          terraform version
+      #     echo ""
+      #     echo "✅ Terraform installed:"
+      #     terraform version
 
       # ── Write local backend override ───────────────────────────────────────
       # Inject a local backend so we never need S3/remote state.
