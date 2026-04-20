@@ -3,7 +3,7 @@ terraform/.terraform/
 terraform/.terraform.lock.hcl
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
-terraform/terraform.tfvars        # Contains real secrets — git-ignored
+#terraform/terraform.tfvars        # Contains real secrets — git-ignored
 
 # Python
 __pycache__/
