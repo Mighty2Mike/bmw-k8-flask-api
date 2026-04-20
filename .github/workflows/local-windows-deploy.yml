@@ -102,13 +102,13 @@ jobs:
           # echo "── Active context ──────────────────────────────────────────"
           # kubectl config current-context
 
-          echo ""
-          echo "── Cluster info ────────────────────────────────────────────"
-          kubectl cluster-info --request-timeout=10s
+          # echo ""
+          # echo "── Cluster info ────────────────────────────────────────────"
+          # kubectl cluster-info --request-timeout=10s
 
-          echo ""
-          echo "── Node status ─────────────────────────────────────────────"
-          kubectl get nodes -o wide
+          # echo ""
+          # echo "── Node status ─────────────────────────────────────────────"
+          # kubectl get nodes -o wide
         env:
           KUBECONFIG: ${{ env.KUBECONFIG_PATH }}
 
