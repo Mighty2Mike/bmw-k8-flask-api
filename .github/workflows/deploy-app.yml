@@ -30,7 +30,7 @@ on:
       skip_sast:
         description: "Skip SAST (emergency hotfix only)"
         required: false
-        default: "false"
+        default: false
         type: boolean
 
 # ─────────────────────────────────────────────────────────────────────────────
