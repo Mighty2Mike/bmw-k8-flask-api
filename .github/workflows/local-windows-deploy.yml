@@ -91,16 +91,16 @@ jobs:
 
       - name: Setup Kubernetes Cluster in Docker Environment
         uses: medyagh/setup-minikube@latest
-        
+
       # ── Verify kubectl can reach Minikube ──────────────────────────────────
       - name: Check Minikube is reachable
         run: |
           echo "── kubectl version ─────────────────────────────────────────"
           kubectl version --client
 
-          echo ""
-          echo "── Active context ──────────────────────────────────────────"
-          kubectl config current-context
+          # echo ""
+          # echo "── Active context ──────────────────────────────────────────"
+          # kubectl config current-context
 
           echo ""
           echo "── Cluster info ────────────────────────────────────────────"
