@@ -15,10 +15,10 @@ variable "environment" {
   type        = string
   default     = "development"
 
-  validation {
-    condition     = contains(["development", "staging", "production"], var.environment)
-    error_message = "environment must be one of: development, staging, production"
-  }
+  # validation {
+  #   condition     = contains(["development", "staging", "production"], var.environment)
+  #   error_message = "environment must be one of: development, staging, production"
+  # }
 }
 
 # -----------------------------------------------------------------------
