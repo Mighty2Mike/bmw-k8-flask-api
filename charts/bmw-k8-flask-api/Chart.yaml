@@ -1,0 +1,9 @@
+apiVersion: v2
+name: flask-api
+description: |
+  Production-grade Flask REST API Helm chart.
+  Supports HPA (horizontal) and VPA (vertical) autoscaling,
+  liveness/readiness probes, and secret/configmap injection.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,94 @@
+# Default values — override per environment using -f values.prod.yaml etc.
+
+replicaCount: 2
+environment: development
+
+image:
+  repository: michaelnthodidocker/bmw-flask-k8-assessment
+  tag: latest
+  pullPolicy: Always   # Never = use local Minikube image
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 5000
+
+# Reference to externally managed K8s Secret and ConfigMap (created by Terraform)
+existingSecret: flask-secrets
+existingConfigMap: flask-config
+# Kafka credentials secret — created by Terraform from kafka_* variables
+existingKafkaSecret: kafka-secrets
+
+# -----------------------------------------------------------------------
+# Resource requests and limits
+# Requests: guaranteed resources reserved on the node
+# Limits:   hard ceiling — pod is OOMKilled or throttled if exceeded
+# Setting both enables the VPA to make recommendations and HPA to work
+# -----------------------------------------------------------------------
+resources:
+  requests:
+    cpu: "100m"       # 0.1 CPU core
+    memory: "128Mi"
+  limits:
+    cpu: "500m"       # 0.5 CPU core
+    memory: "256Mi"
+
+# -----------------------------------------------------------------------
+# Horizontal Pod Autoscaler (HPA)
+# Scales the NUMBER of pod replicas based on CPU/memory load
+# -----------------------------------------------------------------------
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  # Scale up when average CPU across all pods exceeds this %
+  targetCPUUtilizationPercentage: 60
+  averageUtilization: 50
+  # Scale up when average memory across all pods exceeds this %
+  targetMemoryUtilizationPercentage: 70
+  averageValue: 500Mi
+
+# -----------------------------------------------------------------------
+# Vertical Pod Autoscaler (VPA)
+# Adjusts CPU/memory REQUESTS on individual pods based on actual usage.
+# Mode: "Off" = recommendations only (safe for assessment; change to
+#       "Auto" for live right-sizing in production)
+# -----------------------------------------------------------------------
+vpa:
+  enabled: true
+  updateMode: "Off"   # Off | Initial | Recreate | Auto
+
+# -----------------------------------------------------------------------
+# Probes — critical for HA: K8s won't route traffic to unhealthy pods
+# -----------------------------------------------------------------------
+livenessProbe:
+  path: /health
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  path: /ready
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+# -----------------------------------------------------------------------
+# Pod Disruption Budget — ensures minimum pods stay up during
+# node maintenance or rolling updates (HA best practice)
+# -----------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  host: flask-api.local
+
+# Rolling update strategy — avoids downtime during deployments
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1        # Temporarily allow 1 extra pod during rollout
+    maxUnavailable: 0  # Never take a pod down before a new one is ready

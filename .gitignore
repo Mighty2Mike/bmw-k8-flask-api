@@ -1,0 +1,14 @@
+# Terraform — never commit state or real secret values
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars        # Contains real secrets — git-ignored
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# K6 results
+k6/results.json

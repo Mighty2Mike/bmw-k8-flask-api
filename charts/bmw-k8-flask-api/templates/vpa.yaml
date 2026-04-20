@@ -1,0 +1,29 @@
+{{- if .Values.vpa.enabled }}
+# VPA requires the vertical-pod-autoscaler addon:
+#   minikube addons enable vpa
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-vpa
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}
+  updatePolicy:
+    # "Off"       = recommendations only, no automatic changes (safe for dev)
+    # "Initial"   = set resources on pod creation only
+    # "Recreate"  = evict and recreate pods to apply new resource requests
+    # "Auto"      = full automatic right-sizing (production)
+    updateMode: {{ .Values.vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: flask-api
+        minAllowed:
+          cpu: "50m"
+          memory: "64Mi"
+        maxAllowed:
+          cpu: "2"
+          memory: "1Gi"
+{{- end }}

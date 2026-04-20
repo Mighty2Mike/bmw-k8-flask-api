@@ -1,0 +1,44 @@
+{{- if .Values.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-hpa
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    # Scale horizontally when CPU load exceeds threshold
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          #averageUtilizationPercentage: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.hpa.averageUtilization }}
+    # Also scale on memory pressure
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          #averageUtilizationPercentage: {{ .Values.hpa.targetMemoryUtilizationPercentage }}
+          averageValue: {{ .Values.hpa.averageValue }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30   # React quickly to load spikes
+      policies:
+        - type: Pods
+          value: 2                      # Add up to 2 pods at a time
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 120  # Wait 2 min before scaling down (avoid flapping)
+      policies:
+        - type: Pods
+          value: 1                      # Remove 1 pod at a time
+          periodSeconds: 60
+{{- end }}

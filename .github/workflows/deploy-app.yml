@@ -1,0 +1,581 @@
+name: CI/CD Pipeline — SAST → Build → Infrastructure → Deploy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIGGER STRATEGY
+#   • Push to main/develop triggers full pipeline
+#   • Pull Requests run SAST + build only (no deploy) — shift-left security
+#   • Manual dispatch allows environment override (hotfix/rollback capability)
+#   • Path filters prevent unnecessary runs on doc-only changes
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, production]
+      skip_sast:
+        description: "Skip SAST (emergency hotfix only)"
+        required: false
+        default: "false"
+        type: boolean
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
+# Production deploys are NOT cancelled mid-flight (separate group)
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GLOBAL ENVIRONMENT — single source of truth, override per job as needed
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  DOCKER_IMAGE: michaelnthodidocker/bmw-flask-k8-assessment
+  DOCKER_TAG: ${{ github.sha }}          # Immutable tag — never use :latest as sole tag
+  DOCKER_TAG_LATEST: latest
+  PYTHON_VERSION: "3.11"
+  TERRAFORM_VERSION: "1.8.0"
+  HELM_RELEASE: bmw-gitops-flask-k8
+  HELM_CHART_PATH: ./helm/bmw-gitops-flask-k8
+  TERRAFORM_DIR: ./terraform
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERMISSIONS — principle of least privilege (PoLP)
+# Each job overrides only what it needs
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents: read
+  security-events: write   # Required for uploading SARIF to GitHub Security tab
+  packages: write
+  id-token: write          # OIDC for cloud auth (Terraform/K8s) — no long-lived keys
+
+# =============================================================================
+# JOB 1: SAST — Static Application Security Testing
+# Gate: All downstream jobs depend on this passing
+# =============================================================================
+jobs:
+  sast:
+    name: "🔐 SAST — Security Analysis"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.skip_sast != 'true' }}
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history needed for accurate diff analysis
+
+      # ── Python dependency audit ───────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install bandit safety semgrep
+
+      # ── Bandit — Python AST-level security linter ─────────────────────────
+      # Checks: hardcoded passwords, SQL injection, shell injection, etc.
+      - name: Run Bandit (Python SAST)
+        run: |
+          bandit -r . \
+            --exclude ./.venv,./tests \
+            --severity-level medium \
+            --confidence-level medium \
+            --format sarif \
+            --output bandit-results.sarif
+        continue-on-error: false   # Hard failure — pipeline stops here if issues found
+
+      - name: Upload Bandit SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()   # Upload even on failure so devs can see findings in UI
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+
+      # ── Safety — known CVE check on installed packages ────────────────────
+      - name: Run Safety (dependency CVE audit)
+        run: |
+          safety check \
+            --full-report \
+            --output json \
+            > safety-report.json || true
+          # Parse and fail on high/critical CVEs
+          python - <<'EOF'
+          import json, sys
+          with open("safety-report.json") as f:
+              report = json.load(f)
+          vulns = report.get("vulnerabilities", [])
+          critical = [v for v in vulns if v.get("severity", "").upper() in ("HIGH", "CRITICAL")]
+          if critical:
+              print(f"❌ {len(critical)} HIGH/CRITICAL CVEs found:")
+              for v in critical:
+                  print(f"  • {v['package_name']} {v['analyzed_version']}: {v['vulnerability_id']}")
+              sys.exit(1)
+          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues, all low/medium)")
+          EOF
+
+      # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
+      - name: Run Semgrep (OWASP Top 10 rules)
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          semgrep scan \
+            --config=p/owasp-top-ten \
+            --config=p/python \
+            --config=p/flask \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error \
+            --exclude='tests/' \
+            --exclude='.venv/'
+
+      - name: Upload Semgrep SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      # ── CodeQL — deep semantic analysis (optional but shows maturity) ─────
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-and-quality
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql
+
+      # ── Secret scanning — catch leaked credentials ─────────────────────────
+      - name: Run Gitleaks (secret detection)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Upload all SAST artifacts for audit trail ─────────────────────────
+      - name: Upload SAST reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sast-reports-${{ github.sha }}
+          path: |
+            bandit-results.sarif
+            safety-report.json
+            semgrep-results.sarif
+          retention-days: 90   # Keep 90 days for compliance/audit purposes
+
+  # ===========================================================================
+  # JOB 2: BUILD & PUSH — Docker image with supply-chain hardening
+  # ===========================================================================
+  build-and-push:
+    name: "🐳 Build & Push Docker Image"
+    runs-on: ubuntu-latest
+    needs: [sast]   # Only runs if SAST passes — enforce the gate
+    if: github.event_name != 'pull_request'   # Don't push images from PRs
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}   # Used for provenance
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── Docker Buildx for multi-platform + cache support ──────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64   # Multi-arch for flexibility
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}   # Use access token, NOT password
+
+      # ── Docker image metadata (OCI labels, tags) ──────────────────────────
+      # Produces: SHA tag (immutable) + branch tag + semver tag (if git tag)
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.title=BMW Flask K8s Assessment
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created={{date 'RFC3339'}}
+
+      # ── Hadolint — lint Dockerfile before building ────────────────────────
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      # ── Build with layer caching (GitHub Cache backend) ───────────────────
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha                   # Pull from GitHub Actions cache
+          cache-to: type=gha,mode=max            # Push back for next run
+          provenance: true                        # SLSA provenance attestation
+          sbom: true                              # Software Bill of Materials
+
+      # ── Trivy — container image vulnerability scan ────────────────────────
+      # Run AFTER build so we scan the actual image, not just the filesystem
+      - name: Run Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
+          ignore-unfixed: true     # Only fail on patchable vulnerabilities
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+  # ===========================================================================
+  # JOB 3: TERRAFORM — Infrastructure as Code
+  # Runs AFTER image is pushed so infra can reference the new image if needed
+  # ===========================================================================
+  terraform:
+    name: "🏗️  Terraform — Infrastructure"
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    environment: ${{ github.event.inputs.environment || 'staging' }}   # Requires manual approval for production
+
+    defaults:
+      run:
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── OIDC Authentication — no long-lived cloud credentials stored ──────
+      # Best practice: use OIDC federation instead of static cloud keys
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: GitHubActions-Terraform-${{ github.run_id }}
+        # Remove/replace with GCP or Azure equivalent as needed
+
+      - name: Set up Terraform ${{ env.TERRAFORM_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false   # Disable wrapper to parse outputs cleanly
+
+      # ── TFLint — catch Terraform misconfigurations early ──────────────────
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint --format compact
+
+      # ── Checkov — IaC security scanning (CIS benchmarks) ─────────────────
+      - name: Run Checkov (Terraform security scan)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ env.TERRAFORM_DIR }}
+          framework: terraform
+          soft_fail: false
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov-terraform
+
+      # ── Terraform workflow ─────────────────────────────────────────────────
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="key=${{ github.event.inputs.environment || 'staging' }}/terraform.tfstate" \
+            -reconfigure
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="docker_image=${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}" \
+            -var="environment=${{ github.event.inputs.environment || 'staging' }}" \
+            -out=tfplan \
+            -detailed-exitcode
+        continue-on-error: true   # Allow plan to show changes before deciding to fail
+
+      # ── Post plan as PR comment for visibility ────────────────────────────
+      - name: Comment Terraform Plan on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const output = `### Terraform Plan 📋
+            **Exit Code**: \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Terraform Apply
+        if: steps.plan.outcome == 'success' || steps.plan.outputs.exitcode == '2'
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            tfplan
+
+      - name: Upload Terraform plan artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: ${{ env.TERRAFORM_DIR }}/tfplan
+          retention-days: 30
+
+  # ===========================================================================
+  # JOB 4: HELM DEPLOY — Application deployment via GitOps-style Helm
+  # ===========================================================================
+  helm-deploy:
+    name: "⛵ Helm — Deploy Application"
+    runs-on: ubuntu-latest
+    needs: [terraform]   # Deploy only after infra is confirmed
+
+    environment:
+      name: ${{ github.event.inputs.environment || 'staging' }}
+      url: ${{ steps.get-url.outputs.app-url }}   # Shows deployment URL in GitHub UI
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── OIDC auth to Kubernetes cluster ───────────────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: GitHubActions-Helm-${{ github.run_id }}
+
+      - name: Update kubeconfig (EKS)
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ secrets.AWS_REGION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.15.0"
+
+      # ── Helm chart linting ────────────────────────────────────────────────
+      - name: Lint Helm chart
+        run: |
+          helm lint ${{ env.HELM_CHART_PATH }} \
+            --set image.tag=${{ env.DOCKER_TAG }} \
+            --set image.repository=${{ env.DOCKER_IMAGE }}
+
+      # ── Helm diff — preview changes before applying (like terraform plan) ─
+      - name: Install helm-diff plugin
+        run: helm plugin install https://github.com/databus23/helm-diff
+
+      - name: Preview Helm diff (what will change)
+        run: |
+          helm diff upgrade ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
+            --namespace default \
+            --set image.repository=${{ env.DOCKER_IMAGE }} \
+            --set image.tag=${{ env.DOCKER_TAG }} \
+            --set environment=${{ github.event.inputs.environment || 'staging' }} \
+            --values ${{ env.HELM_CHART_PATH }}/values-${{ github.event.inputs.environment || 'staging' }}.yaml \
+            --allow-unreleased || true   # Non-fatal on first deploy (no existing release)
+
+      # ── Helm upgrade/install ───────────────────────────────────────────────
+      - name: Deploy Helm chart
+        id: helm-deploy
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
+            --namespace default \
+            --create-namespace \
+            --set image.repository=${{ env.DOCKER_IMAGE }} \
+            --set image.tag=${{ env.DOCKER_TAG }} \
+            --set image.pullPolicy=Always \
+            --set environment=${{ github.event.inputs.environment || 'staging' }} \
+            --values ${{ env.HELM_CHART_PATH }}/values-${{ github.event.inputs.environment || 'staging' }}.yaml \
+            --atomic \
+            --timeout 5m \
+            --wait \
+            --history-max 10
+
+      # --atomic: rolls back automatically if deploy fails (zero-downtime safety)
+      # --wait: blocks until pods are ready
+      # --history-max 10: prevents unbounded revision history
+
+      # ── Verify deployment health ───────────────────────────────────────────
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/${{ env.HELM_RELEASE }} \
+            --namespace default \
+            --timeout=120s
+
+          echo "── Pod status ──────────────────────────────────"
+          kubectl get pods -l app.kubernetes.io/name=${{ env.HELM_RELEASE }} \
+            --namespace default
+
+          echo "── Service endpoints ────────────────────────────"
+          kubectl get svc ${{ env.HELM_RELEASE }} --namespace default
+
+      - name: Get application URL
+        id: get-url
+        run: |
+          APP_URL=$(kubectl get svc ${{ env.HELM_RELEASE }} \
+            --namespace default \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "app-url=http://${APP_URL}" >> $GITHUB_OUTPUT
+          echo "Application available at: http://${APP_URL}"
+
+      # ── Smoke test — quick HTTP health check post-deploy ─────────────────
+      - name: Smoke test — health check
+        run: |
+          APP_URL="${{ steps.get-url.outputs.app-url }}"
+          echo "Running smoke test against ${APP_URL}"
+
+          for i in {1..5}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Smoke test passed — HTTP 200 from /health"
+              exit 0
+            fi
+            echo "⏳ Attempt $i/5 — got HTTP ${STATUS}, retrying in 15s..."
+            sleep 15
+          done
+
+          echo "❌ Smoke test failed after 5 attempts"
+          echo "⚠️  Triggering Helm rollback..."
+          helm rollback ${{ env.HELM_RELEASE }} --namespace default
+          exit 1
+
+      # ── Helm release summary ──────────────────────────────────────────────
+      - name: Print Helm release summary
+        if: always()
+        run: |
+          helm history ${{ env.HELM_RELEASE }} --namespace default
+
+  # ===========================================================================
+  # JOB 5: NOTIFY — Pipeline outcome notification
+  # ===========================================================================
+  notify:
+    name: "📣 Notify Pipeline Result"
+    runs-on: ubuntu-latest
+    needs: [sast, build-and-push, terraform, helm-deploy]
+    if: always()   # Run even if upstream jobs fail
+
+    steps:
+      - name: Determine overall status
+        id: status
+        run: |
+          if [[ "${{ needs.sast.result }}" == "failure" ]]; then
+            echo "status=❌ SAST gate failed — pipeline blocked" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.build-and-push.result }}" == "failure" ]]; then
+            echo "status=❌ Docker build/push failed" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.terraform.result }}" == "failure" ]]; then
+            echo "status=❌ Terraform apply failed" >> $GITHUB_OUTPUT
+            echo "color=warning" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.helm-deploy.result }}" == "failure" ]]; then
+            echo "status=❌ Helm deploy failed — auto-rollback triggered" >> $GITHUB_OUTPUT
+            echo "color=warning" >> $GITHUB_OUTPUT
+          else
+            echo "status=✅ Full pipeline succeeded" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "${{ steps.status.outputs.status }}",
+              "attachments": [{
+                "color": "${{ steps.status.outputs.color }}",
+                "fields": [
+                  { "title": "Repository", "value": "${{ github.repository }}", "short": true },
+                  { "title": "Branch", "value": "${{ github.ref_name }}", "short": true },
+                  { "title": "Commit", "value": "${{ github.sha }}", "short": true },
+                  { "title": "Actor", "value": "${{ github.actor }}", "short": true },
+                  { "title": "Image", "value": "${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}", "short": false },
+                  { "title": "Run URL", "value": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}", "short": false }
+                ]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

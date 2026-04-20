@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+    version: {{ .Values.image.tag | quote }}
+    managed-by: helm
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  strategy:
+    type: {{ .Values.strategy.type }}
+    rollingUpdate:
+      maxSurge: {{ .Values.strategy.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.strategy.rollingUpdate.maxUnavailable }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+        version: {{ .Values.image.tag | quote }}
+    spec:
+      # Spread pods across nodes for resilience (HA best practice)
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: {{ .Release.Name }}
+
+      # Security context: run as non-root (matches Dockerfile)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+      containers:
+        - name: flask-api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 5000
+
+          # ---------------------------------------------------------------
+          # Environment variables from ConfigMap (non-sensitive)
+          # ---------------------------------------------------------------
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.existingConfigMap }}
+
+          # ---------------------------------------------------------------
+          # Environment variables from Secret (sensitive app config)
+          # Injected as env vars — the app reads them via os.environ
+          # ---------------------------------------------------------------
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+
+          # ---------------------------------------------------------------
+          # Kafka credentials from dedicated Kafka Secret
+          # Kept in a separate secret so it can be rotated independently
+          # without restarting pods for unrelated secret changes.
+          # Injected vars: KAFKA_BOOTSTRAP_SERVERS, KAFKA_SASL_USERNAME,
+          #                KAFKA_SASL_PASSWORD, KAFKA_SECURITY_PROTOCOL, ...
+          # ---------------------------------------------------------------
+            - secretRef:
+                name: {{ .Values.existingKafkaSecret }}
+
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+
+          # ---------------------------------------------------------------
+          # Liveness probe: if this fails, K8s restarts the pod
+          # ---------------------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.path }}
+              port: 5000
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+
+          # ---------------------------------------------------------------
+          # Readiness probe: if this fails, pod is removed from Service
+          # endpoints so no traffic is sent to it — critical for HA
+          # ---------------------------------------------------------------
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.path }}
+              port: 5000
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
