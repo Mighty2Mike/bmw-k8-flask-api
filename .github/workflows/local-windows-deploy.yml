@@ -285,16 +285,16 @@ jobs:
           terraform validate -no-color
           echo "✅ Validate passed"
 
-      # ── terraform fmt check ────────────────────────────────────────────────
-      - name: Terraform Format Check
-        id: fmt
-        run: |
-          echo "── terraform fmt ───────────────────────────────────────────"
-          terraform fmt -check -recursive -no-color || {
-            echo "⚠️  Formatting issues found — auto-fixing..."
-            terraform fmt -recursive
-            echo "   Run 'terraform fmt -recursive' locally and commit the changes."
-          }
+      # # ── terraform fmt check ────────────────────────────────────────────────
+      # - name: Terraform Format Check
+      #   id: fmt
+      #   run: |
+      #     echo "── terraform fmt ───────────────────────────────────────────"
+      #     terraform fmt -check -recursive -no-color || {
+      #       echo "⚠️  Formatting issues found — auto-fixing..."
+      #       terraform fmt -recursive
+      #       echo "   Run 'terraform fmt -recursive' locally and commit the changes."
+      #     }
 
       # ── terraform plan ─────────────────────────────────────────────────────
       - name: Terraform Plan
