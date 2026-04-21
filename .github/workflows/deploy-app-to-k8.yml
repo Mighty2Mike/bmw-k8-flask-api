@@ -91,6 +91,7 @@ jobs:
             
       - name: Test service URLs
         run: |
+          kubectl get pods -n bmw-k8-flask-api
           minikube service list
           minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url
           # echo -n "------------------opening the service------------------"
