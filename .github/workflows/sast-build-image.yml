@@ -1,4 +1,4 @@
-name: CI Pipeline — SAST → Build
+name: CI Pipeline - SAST → Build
 
 on:
   push:
@@ -259,3 +259,4 @@ jobs:
       - name: Send Slack notification
         run: |
           # TODO - SEND Notifications to Teams channel of failures (if any)
+          
