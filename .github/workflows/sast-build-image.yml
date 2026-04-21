@@ -109,10 +109,7 @@ jobs:
       # ── Safety — known CVE check on installed packages ────────────────────
       - name: Run Safety (dependency CVE audit)
         run: |
-          safety check \
-            --full-report \
-            --output json \
-            > safety-report.json || true
+          safety check --full-report --output json > safety-report.json 2>/dev/null || true
           # Parse and fail on high/critical CVEs
           python - <<'EOF'
           import json, sys
