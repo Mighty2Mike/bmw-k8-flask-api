@@ -303,7 +303,7 @@ jobs:
 
       - name: Deploy BMW FLASK API Helm Chart
         run: |
-          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
+          helm install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
           
       - name: Wait for 60 seconds
         run: sleep 60s
@@ -347,14 +347,14 @@ jobs:
 
           echo "❌ Smoke test failed after 5 attempts"
           echo "⚠️  Triggering Helm rollback..."
-          helm rollback ${{ env.HELM_RELEASE }} --namespace default
+          helm rollback ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
           exit 1
 
       # ── Helm release summary ──────────────────────────────────────────────
       - name: Print Helm release summary
         if: always()
         run: |
-          helm history ${{ env.HELM_RELEASE }} --namespace default
+          helm history ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
 
 
       - name: Test service URLs

@@ -1,4 +1,12 @@
-## Project File Reference
+
+# Flask K8s Assessment — Local K8 Deployment on Minikube
+
+A near production-grade Flask REST API deployed onto a local Minikube cluster using
+Terraform (IaC) and Helm, demonstrating horizontal & vertical autoscaling,
+secrets management, and flood-test-driven scale validation.
+
+---
+## Project File Structure
 
 ```
 flask-k8s-assessment/
@@ -30,15 +38,6 @@ flask-k8s-assessment/
 └── README.md
 ```
 ---
-
-# Flask K8s Assessment — Local HA Deployment on Minikube
-
-A production-grade Flask REST API deployed onto a local Minikube cluster using
-Terraform (IaC) and Helm, demonstrating horizontal & vertical autoscaling,
-secrets management, and flood-test-driven scale validation.
-
----
-
 ## Architecture
 
 ```
