@@ -76,9 +76,9 @@ minikube start --cpus=4 --memory=4096 --nodes=2
 
 # Enable required addons
 minikube addons enable metrics-server   # Required for HPA
-minikube addons enable ingress          # Required for NGINX ingress
-minikube addons enable vpa              # Required for VPA (optional)
-
+# Required for NGINX ingress
+helm repo add fairwinds-stable https://charts.fairwinds.com/stable
+helm install my-vpa fairwinds-stable/vpa --version 1.3.1
 # Verify cluster is healthy
 kubectl get nodes
 ```

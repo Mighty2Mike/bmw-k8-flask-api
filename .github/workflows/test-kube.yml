@@ -26,8 +26,11 @@ jobs:
            minikube addons enable metrics-server 
            #Required for NGINX ingress  
            minikube addons enable ingress   
-           #Required for VPA       
-           minikube addons enable vpa              
+           
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
 
       - name: Checkout source FLASK API repo
         uses: actions/checkout@v4
@@ -35,13 +38,14 @@ jobs:
       - name: Install teraform
         uses: hashicorp/setup-terraform@v4
 
-
-      - name: Terraform Init
+      - name: Deploy K8 VPA Helm Chart
         run: |
-          cd terraform
-          terraform init -reconfigure -upgrade -no-color
-          echo ""
-          terraform providers
+          # Add the repository
+          helm repo add fairwinds-stable https://charts.fairwinds.com/stable
+          helm repo update
+          
+          # Install or upgrade the chart
+          helm install my-vpa fairwinds-stable/vpa --version 1.3.1
  
       - name: Terraform Validate
         run: terraform validate -no-color
