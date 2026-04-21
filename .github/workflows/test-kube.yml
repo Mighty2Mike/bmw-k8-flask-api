@@ -59,6 +59,17 @@ jobs:
           [ $EXIT -eq 2 ] && echo "📋 Changes detected" && exit 0
           exit $EXIT
 
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve -no-color -input=false tfplan
+            echo ""
+            echo "── Resources in state ──────────────────────────────────"
+            terraform state list 2>/dev/null || true
+            echo ""
+            echo "── Outputs ─────────────────────────────────────────────"
+            terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
+
       # - name: Build image
       #   run: |
       #     minikube image build -t local/devex:v1 .
