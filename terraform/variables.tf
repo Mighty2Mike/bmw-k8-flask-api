@@ -118,3 +118,8 @@ variable "kafka_group_id" {
   type        = string
   default     = "flask-api-consumer-group"
 }
+
+
+variable "enable_feature" { 
+  default = true 
+}

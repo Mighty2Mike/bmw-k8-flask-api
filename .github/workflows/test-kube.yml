@@ -77,7 +77,7 @@ jobs:
       - name: Terraform Apply
         run: |
           cd terraform
-          terraform apply -auto-approve -no-color -input=false tfplan
+          terraform apply -auto-approve -no-color -input=false tfplan -var="enable_feature=false"
             echo ""
             echo "── Resources in state ──────────────────────────────────"
             terraform state list 2>/dev/null || true
@@ -85,6 +85,9 @@ jobs:
             echo "── Outputs ─────────────────────────────────────────────"
             terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
 
+      - name: Deploy BMW FLASK API Helm Chart
+        run: |
+          helm upgrade --install bmw-k8-flask-api ./charts/bmw-k8-flask-api -n bmw-k8-flask-api
       # - name: Build image
       #   run: |
       #     minikube image build -t local/devex:v1 .
