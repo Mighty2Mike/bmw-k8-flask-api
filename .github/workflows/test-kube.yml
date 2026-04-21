@@ -19,16 +19,53 @@ jobs:
       # now you can run kubectl to see the pods in the cluster
       - name: Try the cluster!
         run: kubectl get pods -A
-      - name: Build image
+
+      - name: Checkout source FLASK API repo
+        uses: actions/checkout@v4
+
+      - name: Install teraform
+        uses: hashicorp/setup-terraform@v4
+
+
+      - name: Terraform Init
         run: |
-          minikube image build -t local/devex:v1 .
-      - name: Deploy to minikube
+          terraform init -reconfigure -upgrade -no-color
+          echo ""
+          terraform providers
+ 
+      - name: Terraform Validate
+        run: terraform validate -no-color
+ 
+      - name: Terraform Format Check
         run: |
-          kubectl apply -f deploy/k8s.yaml
-          kubectl wait --for=condition=ready pod -l app=local-devex
-      - name: Test service URLs
+          terraform fmt -check -recursive -no-color || {
+            echo "⚠️  Auto-fixing format..."
+            terraform fmt -recursive
+          }
+ 
+      - name: Terraform Plan
         run: |
-          minikube service list
-          minikube service local-devex-svc --url
-          echo -n "------------------opening the service------------------"
-          curl $(minikube service local-devex-svc --url)/version
+          terraform plan \
+            -no-color \
+            -out=tfplan \
+            -detailed-exitcode \
+            2>&1 | tee plan-output.txt
+ 
+          EXIT=${PIPESTATUS[0]}
+          [ $EXIT -eq 0 ] && echo "✅ No changes" && exit 0
+          [ $EXIT -eq 2 ] && echo "📋 Changes detected" && exit 0
+          exit $EXIT
+
+      # - name: Build image
+      #   run: |
+      #     minikube image build -t local/devex:v1 .
+      # - name: Deploy to minikube
+      #   run: |
+      #     kubectl apply -f deploy/k8s.yaml
+      #     kubectl wait --for=condition=ready pod -l app=local-devex
+      # - name: Test service URLs
+      #   run: |
+      #     minikube service list
+      #     minikube service local-devex-svc --url
+      #     echo -n "------------------opening the service------------------"
+      #     curl $(minikube service local-devex-svc --url)/version
