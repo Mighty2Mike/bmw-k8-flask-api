@@ -77,13 +77,13 @@ jobs:
       - name: Terraform Apply
         run: |
           cd terraform
-          terraform apply -auto-approve -no-color -input=false tfplan -var="enable_feature=false"
-            echo ""
-            echo "── Resources in state ──────────────────────────────────"
-            terraform state list 2>/dev/null || true
-            echo ""
-            echo "── Outputs ─────────────────────────────────────────────"
-            terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
+          terraform apply -auto-approve -no-color -input=false tfplan -var='enable_feature=false'
+          echo ""
+          echo "── Resources in state ──────────────────────────────────"
+          terraform state list 2>/dev/null || true
+          echo ""
+          echo "── Outputs ─────────────────────────────────────────────"
+          terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
 
       - name: Deploy BMW FLASK API Helm Chart
         run: |
