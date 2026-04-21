@@ -134,10 +134,10 @@ Terraform will create:
 
 ```powershell
 # Get the local URL (opens browser automatically)
-minikube service flask-api -n bmw-k8-flask-api
+minikube service bmw-k8-flask-api -n bmw-k8-flask-api
 
 # Or get just the URL to use in k6 / Postman
-minikube service flask-api -n bmw-k8-flask-api --url
+minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url
 ```
 
 Test the endpoints:
