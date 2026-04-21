@@ -31,7 +31,7 @@ env:
   PYTHON_VERSION: "3.11"
   TERRAFORM_VERSION: "1.8.0"
   HELM_RELEASE: bmw-k8-flask-api
-  HELM_CHART_PATH: ./charts/bmw-k8-flask-ap
+  HELM_CHART_PATH: ./charts/bmw-k8-flask-api
   TERRAFORM_DIR: terraform
 
 jobs:
