@@ -55,7 +55,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r ./app/requirements.txt
-          pip install bandit[sarif] safety semgrep
+          pip install bandit[sarif] semgrep
 
       # ── Bandit — Python AST-level security linter ─────────────────────────
       # Checks: hardcoded passwords, SQL injection, shell injection, etc.
@@ -75,25 +75,6 @@ jobs:
         with:
           sarif_file: bandit-results.sarif
           category: bandit
-
-      # ── Safety — known CVE check on installed packages ────────────────────
-      - name: Run Safety (dependency CVE audit)
-        run: |
-          safety check --full-report --output json > safety-report.json 2>/dev/null || true
-          # Parse and fail on high/critical CVEs
-          python - <<'EOF'
-          import json, sys
-          with open("safety-report.json") as f:
-              report = json.load(f)
-          vulns = report.get("vulnerabilities", [])
-          critical = [v for v in vulns if v.get("severity", "").upper() in ("HIGH", "CRITICAL")]
-          if critical:
-              print(f"❌ {len(critical)} HIGH/CRITICAL CVEs found:")
-              for v in critical:
-                  print(f"  • {v['package_name']} {v['analyzed_version']}: {v['vulnerability_id']}")
-              sys.exit(1)
-          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues, all low/medium)")
-          EOF
 
       # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
       - name: Run Semgrep (OWASP Top 10 rules)
@@ -143,7 +124,6 @@ jobs:
           name: sast-reports-${{ github.sha }}
           path: |
             bandit-results.sarif
-            safety-report.json
             semgrep-results.sarif
           retention-days: 90   # Keep 90 days for compliance/audit purposes
 

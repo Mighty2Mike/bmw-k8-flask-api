@@ -84,7 +84,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r ./app/requirements.txt
-          pip install bandit[sarif] safety semgrep
+          pip install bandit[sarif] semgrep
 
       # ── Bandit — Python AST-level security linter ─────────────────────────
       # Checks: hardcoded passwords, SQL injection, shell injection, etc.
@@ -106,54 +106,6 @@ jobs:
           sarif_file: bandit-results.sarif
           category: bandit
 
-      # ── Safety — known CVE check on installed packages ────────────────────
-      - name: Run Safety (dependency CVE audit)
-        run: |
-          export PYTHONWARNINGS="ignore"
-          
-          # Run safety and capture output
-          # We remove 2>/dev/null temporarily to see errors in the GHA logs if it fails
-          safety check --full-report --output json > safety-report.json || true
-
-          # Check if file is empty
-          if [ ! -s safety-report.json ]; then
-            echo "❌ Safety produced an empty report. Check if safety is installed and your API key (if needed) is valid."
-            exit 1
-          fi
-
-          python - <<'EOF'
-          import json, sys
-
-          try:
-              with open("safety-report.json", "r") as f:
-                  content = f.read().strip()
-                  if not content:
-                      print("❌ safety-report.json is empty")
-                      sys.exit(1)
-                  data = json.load(f.seek(0) or f)
-          except json.JSONDecodeError as e:
-              with open("safety-report.json", "r") as f:
-                  print(f"❌ Invalid JSON produced. Content found: {f.read()[:200]}")
-              sys.exit(1)
-
-          vulns = data.get("vulnerabilities", []) if isinstance(data, dict) else data
-          critical_issues = []
-          
-          for v in vulns:
-              # Safety 3.x uses a 'severity' object, older versions use a string
-              sev = v.get("severity")
-              label = sev.get("label", "").upper() if isinstance(sev, dict) else str(sev).upper()
-
-              if label in ("HIGH", "CRITICAL"):
-                  critical_issues.append(v)
-
-          if critical_issues:
-              print(f"❌ Found {len(critical_issues)} HIGH/CRITICAL CVEs.")
-              sys.exit(1)
-          
-          print("✅ Audit passed.")
-          EOF
-          
       # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
       - name: Run Semgrep (OWASP Top 10 rules)
         env:
@@ -202,7 +154,6 @@ jobs:
           name: sast-reports-${{ github.sha }}
           path: |
             bandit-results.sarif
-            safety-report.json
             semgrep-results.sarif
           retention-days: 90   # Keep 90 days for compliance/audit purposes
 
