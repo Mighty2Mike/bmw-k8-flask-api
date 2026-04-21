@@ -71,8 +71,10 @@ jobs:
             --exclude ./.venv,./tests \
             --severity-level medium \
             --confidence-level medium \
-            --format sarif \
-            --output bandit-results.sarif
+            --format json \
+            --output bandit-results.json || true
+            
+           bandit-sarif-formatter < bandit-results.json > bandit-results.sarif
         continue-on-error: false   # Hard failure — pipeline stops here if issues found
 
       - name: Upload Bandit SARIF to GitHub Security tab

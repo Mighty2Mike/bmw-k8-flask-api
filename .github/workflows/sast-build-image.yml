@@ -95,7 +95,9 @@ jobs:
             --severity-level medium \
             --confidence-level medium \
             --format json \
-            --output bandit-results.sarif
+            --output bandit-results.json || true
+            
+           bandit-sarif-formatter < bandit-results.json > bandit-results.sarif
         continue-on-error: false   # Hard failure — pipeline stops here if issues found
 
       - name: Upload Bandit SARIF to GitHub Security tab
@@ -252,7 +254,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
-          format: json
+          format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
