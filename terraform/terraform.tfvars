@@ -7,7 +7,7 @@ min_replicas = 2
 max_replicas = 10
 
 # Secrets — use strong random values in staging/production
-secret_key     = "SFVCU1RFUlNfQUxMX1BVUlBPU0VfUEFTU1dPUkQ="
+secret_key     = "XXXXXXXXXXXXX"
 database_url   = "sqlite:///dev.db"
 api_key        = "XXXXXX_API_KEY_XXXXXXX"
 
