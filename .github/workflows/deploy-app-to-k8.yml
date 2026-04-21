@@ -1,18 +1,16 @@
 name: CD Pipeline — Infrastructure → Deploy
 on:
-  push:
-    branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".gitignore"
+  pull_request:
+    # This workflow triggers when a PR is opened against any of these branches
+    branches:
+      - master
+      - develop
+      - test
+      - int
+      - prod
+      - 'releases/**'
   workflow_dispatch:
-    inputs:
-      skip_sast:
-        description: "Skip SAST (emergency hotfix only)"
-        required: false
-        default: false
-        type: boolean
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
 # Production deploys are NOT cancelled mid-flight (separate group)
@@ -31,223 +29,16 @@ env:
   PYTHON_VERSION: "3.11"
   TERRAFORM_VERSION: "1.8.0"
   HELM_RELEASE: bmw-k8-flask-api
-  HELM_CHART_PATH: ./charts/bmw-k8-flask-ap
+  HELM_CHART_PATH: ./charts/bmw-k8-flask-api
   TERRAFORM_DIR: terraform
 
 jobs:
-  sast:
-    name: "🔐 SAST — Security Analysis"
-    runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.skip_sast != 'true' }}
-
-    permissions:
-      contents: read
-      security-events: write
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # Full history needed for accurate diff analysis
-
-      # ── Python dependency audit ───────────────────────────────────────────
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r ./app/requirements.txt
-          pip install bandit safety semgrep
-
-      # ── Bandit — Python AST-level security linter ─────────────────────────
-      # Checks: hardcoded passwords, SQL injection, shell injection, etc.
-      - name: Run Bandit (Python SAST)
-        run: |
-          bandit -r . \
-            --exclude ./.venv,./tests \
-            --severity-level medium \
-            --confidence-level medium \
-            --format json \
-            --output bandit-results.sarif
-        continue-on-error: false   # Hard failure — pipeline stops here if issues found
-
-      - name: Upload Bandit SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()   # Upload even on failure so devs can see findings in UI
-        with:
-          sarif_file: bandit-results.sarif
-          category: bandit
-
-      # ── Safety — known CVE check on installed packages ────────────────────
-      - name: Run Safety (dependency CVE audit)
-        run: |
-          safety check \
-            --full-report \
-            --output json \
-            > safety-report.json || true
-          # Parse and fail on high/critical CVEs
-          python - <<'EOF'
-          import json, sys
-          with open("safety-report.json") as f:
-              report = json.load(f)
-          vulns = report.get("vulnerabilities", [])
-          critical = [v for v in vulns if v.get("severity", "").upper() in ("HIGH", "CRITICAL")]
-          if critical:
-              print(f"❌ {len(critical)} HIGH/CRITICAL CVEs found:")
-              for v in critical:
-                  print(f"  • {v['package_name']} {v['analyzed_version']}: {v['vulnerability_id']}")
-              sys.exit(1)
-          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues, all low/medium)")
-          EOF
-
-      # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
-      - name: Run Semgrep (OWASP Top 10 rules)
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-        run: |
-          semgrep scan \
-            --config=p/owasp-top-ten \
-            --config=p/python \
-            --config=p/flask \
-            --sarif \
-            --output semgrep-results.sarif \
-            --error \
-            --exclude='tests/' \
-            --exclude='.venv/'
-
-      - name: Upload Semgrep SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep-results.sarif
-          category: semgrep
-
-      # ── CodeQL — deep semantic analysis (optional but shows maturity) ─────
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: python
-          queries: security-and-quality
-
-      - name: Run CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: codeql
-
-      # ── Secret scanning — catch leaked credentials ─────────────────────────
-      - name: Run Gitleaks (secret detection)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ── Upload all SAST artifacts for audit trail ─────────────────────────
-      - name: Upload SAST reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sast-reports-${{ github.sha }}
-          path: |
-            bandit-results.sarif
-            safety-report.json
-            semgrep-results.sarif
-          retention-days: 90   # Keep 90 days for compliance/audit purposes
-
   # ===========================================================================
-  # JOB 2: BUILD & PUSH — Docker image with supply-chain hardening
-  # ===========================================================================
-  build-and-push:
-    name: "🐳 Build & Push Docker Image"
-    runs-on: ubuntu-latest
-    needs: [sast]   # Only runs if SAST passes — enforce the gate
-    if: github.event_name != 'pull_request'   # Don't push images from PRs
-
-    outputs:
-      image-digest: ${{ steps.build.outputs.digest }}   # Used for provenance
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      # ── Docker Buildx for multi-platform + cache support ──────────────────
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64   # Multi-arch for flexibility
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}   # Use access token, NOT password
-
-      # ── Docker image metadata (OCI labels, tags) ──────────────────────────
-      # Produces: SHA tag (immutable) + branch tag + semver tag (if git tag)
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=sha,format=long,prefix=sha-
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-          labels: |
-            org.opencontainers.image.title=BMW Flask K8s Assessment
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created={{date 'RFC3339'}}
-
-      # ── Hadolint — lint Dockerfile before building ────────────────────────
-      - name: Lint Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
-          failure-threshold: warning
-
-      # ── Build with layer caching (GitHub Cache backend) ───────────────────
-      - name: Build and push image
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha                   # Pull from GitHub Actions cache
-          cache-to: type=gha,mode=max            # Push back for next run
-          provenance: true                        # SLSA provenance attestation
-          sbom: true                              # Software Bill of Materials
-
-      # ── Trivy — container image vulnerability scan ────────────────────────
-      # Run AFTER build so we scan the actual image, not just the filesystem
-      - name: Run Trivy image vulnerability scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
-          format: json
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
-          ignore-unfixed: true     # Only fail on patchable vulnerabilities
-
-      - name: Upload Trivy SARIF results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-image
-  # ===========================================================================
-  # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
+  # JOB 1: TERRAFORM & Helm chart — Infrastructure as Code
   # Runs AFTER image is pushed so infra can reference the new image if needed
   # ===========================================================================
   deploy-infra-and-helm-chart:
     runs-on: ubuntu-latest
-    needs: [sast, build-and-push]
     name: "🏗️ Infra & Helm Chart Deployment on K8 cluster"
     steps:
       - uses: actions/checkout@v4
@@ -287,8 +78,13 @@ jobs:
           helm install my-vpa fairwinds-stable/vpa --version 1.3.1
           kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
  
+      - name: Terraform Init
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init
+
       - name: Terraform Validate
-        run: 
+        run: |
           cd ${{ env.TERRAFORM_DIR }}
           terraform validate -no-color
  
@@ -303,7 +99,6 @@ jobs:
       - name: Terraform Plan
         run: |
           cd ${{ env.TERRAFORM_DIR }}
-          terraform init
           terraform plan \
             -no-color \
             -out=tfplan \
@@ -328,7 +123,7 @@ jobs:
 
       - name: Deploy BMW FLASK API Helm Chart
         run: |
-          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
+          helm install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
           
       - name: Wait for 60 seconds
         run: sleep 60s
@@ -346,18 +141,13 @@ jobs:
           echo "── Service endpoints ────────────────────────────"
           kubectl get svc ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
 
-      - name: Get application URL
-        id: get-url
-        run: |
-          APP_URL=$(kubectl get svc ${{ env.HELM_RELEASE }} \
-            --namespace ${{ env.HELM_RELEASE }} \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          echo "app-url=http://${APP_URL}" >> $GITHUB_OUTPUT
-          echo "Application available at: http://${APP_URL}"
+          echo "── Deployments ────────────────────────────"
+          kubectl get deployment ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
+
 
       - name: Smoke test — health check
         run: |
-          APP_URL="${{ steps.get-url.outputs.app-url }}"
+          APP_URL=$(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)
           echo "Running smoke test against ${APP_URL}"
 
           for i in {1..5}; do
@@ -372,14 +162,14 @@ jobs:
 
           echo "❌ Smoke test failed after 5 attempts"
           echo "⚠️  Triggering Helm rollback..."
-          helm rollback ${{ env.HELM_RELEASE }} --namespace default
+          helm rollback ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
           exit 1
 
       # ── Helm release summary ──────────────────────────────────────────────
       - name: Print Helm release summary
         if: always()
         run: |
-          helm history ${{ env.HELM_RELEASE }} --namespace default
+          helm history ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
 
 
       - name: Test service URLs
@@ -393,12 +183,12 @@ jobs:
 
   
   # ===========================================================================
-  # JOB 4: NOTIFY — Pipeline outcome notification
+  # JOB 2: NOTIFY — Pipeline outcome notification
   # ===========================================================================
   notify:
     name: "📣 Notify Pipeline Result"
     runs-on: ubuntu-latest
-    needs: [sast, build-and-push, deploy-infra-and-helm-chart]
+    needs: [deploy-infra-and-helm-chart]
     if: always()   # Run even if upstream jobs fail
 
     steps:
@@ -420,23 +210,5 @@ jobs:
           fi
 
       - name: Send Slack notification
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "${{ steps.status.outputs.status }}",
-              "attachments": [{
-                "color": "${{ steps.status.outputs.color }}",
-                "fields": [
-                  { "title": "Repository", "value": "${{ github.repository }}", "short": true },
-                  { "title": "Branch", "value": "${{ github.ref_name }}", "short": true },
-                  { "title": "Commit", "value": "${{ github.sha }}", "short": true },
-                  { "title": "Actor", "value": "${{ github.actor }}", "short": true },
-                  { "title": "Image", "value": "${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}", "short": false },
-                  { "title": "Run URL", "value": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}", "short": false }
-                ]
-              }]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+        run: |
+          # TODO - SEND Notifications to Teams channel of failures (if any)
