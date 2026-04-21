@@ -61,7 +61,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r ./app/requirements.txt
-          pip install bandit bandit-sarif-formatter safety semgrep
+          pip install bandit[sarif] safety semgrep
 
       # ── Bandit — Python AST-level security linter ─────────────────────────
       # Checks: hardcoded passwords, SQL injection, shell injection, etc.
@@ -71,10 +71,8 @@ jobs:
             --exclude ./.venv,./tests \
             --severity-level medium \
             --confidence-level medium \
-            --format json \
-            --output bandit-results.json || true
-
-           bandit-sarif-formatter < bandit-results.json > bandit-results.sarif
+            --format sarif \
+            --output bandit-results.sarif || true
         continue-on-error: false   # Hard failure — pipeline stops here if issues found
 
       - name: Upload Bandit SARIF to GitHub Security tab
