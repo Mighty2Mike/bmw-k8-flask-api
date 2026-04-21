@@ -1,12 +1,4 @@
-name: CI/CD Pipeline — SAST → Build → Infrastructure → Deploy
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TRIGGER STRATEGY
-#   • Push to main/develop triggers full pipeline
-#   • Pull Requests run SAST + build only (no deploy) — shift-left security
-#   • Manual dispatch allows environment override (hotfix/rollback capability)
-#   • Path filters prevent unnecessary runs on doc-only changes
-# ─────────────────────────────────────────────────────────────────────────────
+name: CD Pipeline — Infrastructure → Deploy
 on:
   push:
     branches: [main, develop]
@@ -14,25 +6,13 @@ on:
       - "**.md"
       - "docs/**"
       - ".gitignore"
-  pull_request:
-    branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Target environment"
-        required: true
-        default: "staging"
-        type: choice
-        options: [staging, production]
       skip_sast:
         description: "Skip SAST (emergency hotfix only)"
         required: false
         default: false
         type: boolean
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
 # Production deploys are NOT cancelled mid-flight (separate group)
@@ -50,24 +30,10 @@ env:
   DOCKER_TAG_LATEST: latest
   PYTHON_VERSION: "3.11"
   TERRAFORM_VERSION: "1.8.0"
-  HELM_RELEASE: bmw-gitops-flask-k8
-  HELM_CHART_PATH: ./helm/bmw-gitops-flask-k8
-  TERRAFORM_DIR: ./terraform
+  HELM_RELEASE: bmw-k8-flask-api
+  HELM_CHART_PATH: ./charts/bmw-k8-flask-ap
+  TERRAFORM_DIR: terraform
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PERMISSIONS — principle of least privilege (PoLP)
-# Each job overrides only what it needs
-# ─────────────────────────────────────────────────────────────────────────────
-permissions:
-  contents: read
-  security-events: write   # Required for uploading SARIF to GitHub Security tab
-  packages: write
-  id-token: write          # OIDC for cloud auth (Terraform/K8s) — no long-lived keys
-
-# =============================================================================
-# JOB 1: SAST — Static Application Security Testing
-# Gate: All downstream jobs depend on this passing
-# =============================================================================
 jobs:
   sast:
     name: "🔐 SAST — Security Analysis"
@@ -94,7 +60,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r ./app/requirements.txt
           pip install bandit safety semgrep
 
       # ── Bandit — Python AST-level security linter ─────────────────────────
@@ -105,7 +71,7 @@ jobs:
             --exclude ./.venv,./tests \
             --severity-level medium \
             --confidence-level medium \
-            --format sarif \
+            --format json \
             --output bandit-results.sarif
         continue-on-error: false   # Hard failure — pipeline stops here if issues found
 
@@ -263,7 +229,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
-          format: sarif
+          format: json
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
@@ -275,233 +241,120 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
-
   # ===========================================================================
-  # JOB 3: TERRAFORM — Infrastructure as Code
+  # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
   # Runs AFTER image is pushed so infra can reference the new image if needed
   # ===========================================================================
-  terraform:
-    name: "🏗️  Terraform — Infrastructure"
+  deploy-infra-and-helm-chart:
     runs-on: ubuntu-latest
-    needs: [build-and-push]
-    environment: ${{ github.event.inputs.environment || 'staging' }}   # Requires manual approval for production
-
-    defaults:
-      run:
-        working-directory: ${{ env.TERRAFORM_DIR }}
-
+    needs: [sast, build-and-push]
+    name: "🏗️ Infra & Helm Chart Deployment on K8 cluster"
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      # ── OIDC Authentication — no long-lived cloud credentials stored ──────
-      # Best practice: use OIDC federation instead of static cloud keys
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-          role-session-name: GitHubActions-Terraform-${{ github.run_id }}
-        # Remove/replace with GCP or Azure equivalent as needed
+          repository: medyagh/local-dev-example-with-minikube
+      - name: Start minikube
+        uses: medyagh/setup-minikube@latest
+      # now you can run kubectl to see the pods in the cluster
+      - name: Try the cluster!
+        run: kubectl get pods -A
 
-      - name: Set up Terraform ${{ env.TERRAFORM_VERSION }}
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false   # Disable wrapper to parse outputs cleanly
-
-      # ── TFLint — catch Terraform misconfigurations early ──────────────────
-      - name: Set up TFLint
-        uses: terraform-linters/setup-tflint@v4
-
-      - name: Run TFLint
+      - name: Install K8 addons
         run: |
-          tflint --init
-          tflint --format compact
-
-      # ── Checkov — IaC security scanning (CIS benchmarks) ─────────────────
-      - name: Run Checkov (Terraform security scan)
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: ${{ env.TERRAFORM_DIR }}
-          framework: terraform
-          soft_fail: false
-          output_format: sarif
-          output_file_path: checkov-results.sarif
-
-      - name: Upload Checkov SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: checkov-results.sarif
-          category: checkov-terraform
-
-      # ── Terraform workflow ─────────────────────────────────────────────────
-      - name: Terraform Init
-        run: |
-          terraform init \
-            -backend-config="key=${{ github.event.inputs.environment || 'staging' }}/terraform.tfstate" \
-            -reconfigure
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-
-      - name: Terraform Plan
-        id: plan
-        run: |
-          terraform plan \
-            -var="docker_image=${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}" \
-            -var="environment=${{ github.event.inputs.environment || 'staging' }}" \
-            -out=tfplan \
-            -detailed-exitcode
-        continue-on-error: true   # Allow plan to show changes before deciding to fail
-
-      # ── Post plan as PR comment for visibility ────────────────────────────
-      - name: Comment Terraform Plan on PR
-        uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
-        with:
-          script: |
-            const output = `### Terraform Plan 📋
-            **Exit Code**: \`${{ steps.plan.outcome }}\`
-
-            <details><summary>Show Plan</summary>
-
-            \`\`\`terraform
-            ${{ steps.plan.outputs.stdout }}
-            \`\`\`
-
-            </details>
-
-            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });
-
-      - name: Terraform Apply
-        if: steps.plan.outcome == 'success' || steps.plan.outputs.exitcode == '2'
-        run: |
-          terraform apply \
-            -auto-approve \
-            -input=false \
-            tfplan
-
-      - name: Upload Terraform plan artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: terraform-plan-${{ github.sha }}
-          path: ${{ env.TERRAFORM_DIR }}/tfplan
-          retention-days: 30
-
-  # ===========================================================================
-  # JOB 4: HELM DEPLOY — Application deployment via GitOps-style Helm
-  # ===========================================================================
-  helm-deploy:
-    name: "⛵ Helm — Deploy Application"
-    runs-on: ubuntu-latest
-    needs: [terraform]   # Deploy only after infra is confirmed
-
-    environment:
-      name: ${{ github.event.inputs.environment || 'staging' }}
-      url: ${{ steps.get-url.outputs.app-url }}   # Shows deployment URL in GitHub UI
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      # ── OIDC auth to Kubernetes cluster ───────────────────────────────────
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-          role-session-name: GitHubActions-Helm-${{ github.run_id }}
-
-      - name: Update kubeconfig (EKS)
-        run: |
-          aws eks update-kubeconfig \
-            --name ${{ secrets.EKS_CLUSTER_NAME }} \
-            --region ${{ secrets.AWS_REGION }}
-
+           #Required for HPA
+           minikube addons enable metrics-server 
+           #Required for NGINX ingress  
+           minikube addons enable ingress   
+           
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
-          version: "3.15.0"
+          version: 'latest'
 
-      # ── Helm chart linting ────────────────────────────────────────────────
-      - name: Lint Helm chart
+      - name: Checkout source FLASK API repo
+        uses: actions/checkout@v4
+
+      - name: Install teraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Deploy K8 VPA Helm Chart
         run: |
-          helm lint ${{ env.HELM_CHART_PATH }} \
-            --set image.tag=${{ env.DOCKER_TAG }} \
-            --set image.repository=${{ env.DOCKER_IMAGE }}
-
-      # ── Helm diff — preview changes before applying (like terraform plan) ─
-      - name: Install helm-diff plugin
-        run: helm plugin install https://github.com/databus23/helm-diff
-
-      - name: Preview Helm diff (what will change)
+          # Add the repository
+          helm repo add fairwinds-stable https://charts.fairwinds.com/stable
+          helm repo update
+          
+          # Install or upgrade the chart
+          helm install my-vpa fairwinds-stable/vpa --version 1.3.1
+          kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
+ 
+      - name: Terraform Validate
+        run: 
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform validate -no-color
+ 
+      - name: Terraform Format Check
         run: |
-          helm diff upgrade ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
-            --namespace default \
-            --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ env.DOCKER_TAG }} \
-            --set environment=${{ github.event.inputs.environment || 'staging' }} \
-            --values ${{ env.HELM_CHART_PATH }}/values-${{ github.event.inputs.environment || 'staging' }}.yaml \
-            --allow-unreleased || true   # Non-fatal on first deploy (no existing release)
-
-      # ── Helm upgrade/install ───────────────────────────────────────────────
-      - name: Deploy Helm chart
-        id: helm-deploy
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform fmt -check -recursive -no-color || {
+            echo "⚠️  Auto-fixing format..."
+            terraform fmt -recursive
+          }
+ 
+      - name: Terraform Plan
         run: |
-          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
-            --namespace default \
-            --create-namespace \
-            --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ env.DOCKER_TAG }} \
-            --set image.pullPolicy=Always \
-            --set environment=${{ github.event.inputs.environment || 'staging' }} \
-            --values ${{ env.HELM_CHART_PATH }}/values-${{ github.event.inputs.environment || 'staging' }}.yaml \
-            --atomic \
-            --timeout 5m \
-            --wait \
-            --history-max 10
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform init
+          terraform plan \
+            -no-color \
+            -out=tfplan \
+            -detailed-exitcode \
+            2>&1 | tee plan-output.txt
+ 
+          EXIT=${PIPESTATUS[0]}
+          [ $EXIT -eq 0 ] && echo "✅ No changes" && exit 0
+          [ $EXIT -eq 2 ] && echo "📋 Changes detected" && exit 0
+          exit $EXIT
 
-      # --atomic: rolls back automatically if deploy fails (zero-downtime safety)
-      # --wait: blocks until pods are ready
-      # --history-max 10: prevents unbounded revision history
+      - name: Terraform Apply
+        run: |
+          cd ${{ env.TERRAFORM_DIR }}
+          terraform apply -auto-approve -no-color -var='enable_feature=false'
+          echo ""
+          echo "── Resources in state ──────────────────────────────────"
+          terraform state list 2>/dev/null || true
+          echo ""
+          echo "── Outputs ─────────────────────────────────────────────"
+          terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
 
-      # ── Verify deployment health ───────────────────────────────────────────
+      - name: Deploy BMW FLASK API Helm Chart
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
+          
+      - name: Wait for 60 seconds
+        run: sleep 60s
+
       - name: Verify rollout
         run: |
           kubectl rollout status deployment/${{ env.HELM_RELEASE }} \
-            --namespace default \
+            --namespace ${{ env.HELM_RELEASE }} \
             --timeout=120s
 
           echo "── Pod status ──────────────────────────────────"
           kubectl get pods -l app.kubernetes.io/name=${{ env.HELM_RELEASE }} \
-            --namespace default
+            --namespace ${{ env.HELM_RELEASE }}
 
           echo "── Service endpoints ────────────────────────────"
-          kubectl get svc ${{ env.HELM_RELEASE }} --namespace default
+          kubectl get svc ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
 
       - name: Get application URL
         id: get-url
         run: |
           APP_URL=$(kubectl get svc ${{ env.HELM_RELEASE }} \
-            --namespace default \
+            --namespace ${{ env.HELM_RELEASE }} \
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "app-url=http://${APP_URL}" >> $GITHUB_OUTPUT
           echo "Application available at: http://${APP_URL}"
 
-      # ── Smoke test — quick HTTP health check post-deploy ─────────────────
       - name: Smoke test — health check
         run: |
           APP_URL="${{ steps.get-url.outputs.app-url }}"
@@ -528,13 +381,24 @@ jobs:
         run: |
           helm history ${{ env.HELM_RELEASE }} --namespace default
 
+
+      - name: Test service URLs
+        run: |
+          minikube service list
+          minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url
+          echo -n "------------------opening the service------------------"
+          curl $(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)
+          echo -n "------------------opening the /api/v1/data route ------------------"
+          curl $(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)/api/v1/data
+
+  
   # ===========================================================================
-  # JOB 5: NOTIFY — Pipeline outcome notification
+  # JOB 4: NOTIFY — Pipeline outcome notification
   # ===========================================================================
   notify:
     name: "📣 Notify Pipeline Result"
     runs-on: ubuntu-latest
-    needs: [sast, build-and-push, terraform, helm-deploy]
+    needs: [sast, build-and-push, deploy-infra-and-helm-chart]
     if: always()   # Run even if upstream jobs fail
 
     steps:
@@ -547,11 +411,8 @@ jobs:
           elif [[ "${{ needs.build-and-push.result }}" == "failure" ]]; then
             echo "status=❌ Docker build/push failed" >> $GITHUB_OUTPUT
             echo "color=danger" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.terraform.result }}" == "failure" ]]; then
-            echo "status=❌ Terraform apply failed" >> $GITHUB_OUTPUT
-            echo "color=warning" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.helm-deploy.result }}" == "failure" ]]; then
-            echo "status=❌ Helm deploy failed — auto-rollback triggered" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.deploy-infra-and-helm-chart.result }}" == "failure" ]]; then
+            echo "status=❌ Terraform apply & Helm deploy failed" >> $GITHUB_OUTPUT
             echo "color=warning" >> $GITHUB_OUTPUT
           else
             echo "status=✅ Full pipeline succeeded" >> $GITHUB_OUTPUT

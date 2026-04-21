@@ -2,6 +2,7 @@
 # Helm Release — deploys the Flask API chart onto Minikube
 # -----------------------------------------------------------------------
 resource "helm_release" "flask_api" {
+  count = var.enable_feature ? 1 : 0
   name      = "flask-api"
   chart     = "${path.module}/../charts/bmw-k8-flask-api"
   namespace = kubernetes_namespace.flask.metadata[0].name
