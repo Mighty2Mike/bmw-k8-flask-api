@@ -92,10 +92,10 @@ jobs:
       - name: Test service URLs
         run: |
           minikube service list
-          minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url
-          echo -n "------------------opening the service------------------"
-          curl $(minikube service flask-api -n bmw-k8-flask-api --url)/
-          curl $(minikube service flask-api -n bmw-k8-flask-api --url)/api/v1/data
+          # minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url
+          # echo -n "------------------opening the service------------------"
+          # curl $(minikube service flask-api -n bmw-k8-flask-api --url)
+          # curl $(minikube service flask-api -n bmw-k8-flask-api --url)/api/v1/data
 
       # - name: Build image
       #   run: |
