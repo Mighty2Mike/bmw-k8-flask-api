@@ -8,12 +8,12 @@ name: CI/CD Pipeline — SAST → Build → Infrastructure → Deploy
 #   • Path filters prevent unnecessary runs on doc-only changes
 # ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".gitignore"
+  # push:
+  #   branches: [main, develop]
+  #   paths-ignore:
+  #     - "**.md"
+  #     - "docs/**"
+  #     - ".gitignore"
   pull_request:
     branches: [main, develop]
     paths-ignore:
