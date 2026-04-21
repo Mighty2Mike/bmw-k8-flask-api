@@ -157,8 +157,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}   # Use access token, NOT password
+          username: ${{ secrets.docker_username }}
+          password: ${{ secrets.docker_password }}  
 
       # ── Docker image metadata (OCI labels, tags) ──────────────────────────
       # Produces: SHA tag (immutable) + branch tag + semver tag (if git tag)

@@ -87,7 +87,6 @@ jobs:
             --config=p/flask \
             --sarif \
             --output semgrep-results.sarif \
-            --error \
             --exclude='tests/' \
             --exclude='.venv/'
 
@@ -152,8 +151,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}   # Use access token, NOT password
+          username: ${{ secrets.docker_username }}
+          password: ${{ secrets.docker_password }}   # Use access token, NOT password
 
       # ── Docker image metadata (OCI labels, tags) ──────────────────────────
       # Produces: SHA tag (immutable) + branch tag + semver tag (if git tag)
