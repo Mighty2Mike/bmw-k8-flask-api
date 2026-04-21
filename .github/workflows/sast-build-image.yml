@@ -109,52 +109,51 @@ jobs:
       # ── Safety — known CVE check on installed packages ────────────────────
       - name: Run Safety (dependency CVE audit)
         run: |
-          # 1. Clear warnings and force output to JSON
           export PYTHONWARNINGS="ignore"
-          safety check --full-report --output json > safety-report.json 2>/dev/null || true
+          
+          # Run safety and capture output
+          # We remove 2>/dev/null temporarily to see errors in the GHA logs if it fails
+          safety check --full-report --output json > safety-report.json || true
 
-          # 2. Updated Python parser to handle Safety 3.x schema
+          # Check if file is empty
+          if [ ! -s safety-report.json ]; then
+            echo "❌ Safety produced an empty report. Check if safety is installed and your API key (if needed) is valid."
+            exit 1
+          fi
+
           python - <<'EOF'
-          import json, sys, os
+          import json, sys
 
           try:
-              with open("safety-report.json") as f:
-                  data = json.load(f)
-          except Exception as e:
-              print(f"❌ Error reading report: {e}")
+              with open("safety-report.json", "r") as f:
+                  content = f.read().strip()
+                  if not content:
+                      print("❌ safety-report.json is empty")
+                      sys.exit(1)
+                  data = json.load(f.seek(0) or f)
+          except json.JSONDecodeError as e:
+              with open("safety-report.json", "r") as f:
+                  print(f"❌ Invalid JSON produced. Content found: {f.read()[:200]}")
               sys.exit(1)
 
-          # Safety 3.x puts vulns in data['vulnerabilities'] 
-          # Safety 2.x/older used a direct list or data['vulnerabilities']
           vulns = data.get("vulnerabilities", []) if isinstance(data, dict) else data
-          
           critical_issues = []
           
           for v in vulns:
-              # Extract severity - handles both string and object formats
-              sev_data = v.get("severity")
-              # In Safety 3.x, severity is often an object: {"source": "cvssv3", "score": 9.8, "label": "critical"}
-              severity_label = ""
-              if isinstance(sev_data, dict):
-                  severity_label = sev_data.get("label", "").upper()
-              else:
-                  severity_label = str(sev_data).upper()
+              # Safety 3.x uses a 'severity' object, older versions use a string
+              sev = v.get("severity")
+              label = sev.get("label", "").upper() if isinstance(sev, dict) else str(sev).upper()
 
-              if severity_label in ("HIGH", "CRITICAL"):
+              if label in ("HIGH", "CRITICAL"):
                   critical_issues.append(v)
 
           if critical_issues:
-              print(f"❌ {len(critical_issues)} HIGH/CRITICAL CVEs found:")
-              for v in critical_issues:
-                  pkg = v.get("package_name", "unknown")
-                  ver = v.get("analyzed_version", "unknown")
-                  v_id = v.get("vulnerability_id", "N/A")
-                  print(f"  • {pkg} {ver}: {v_id}")
+              print(f"❌ Found {len(critical_issues)} HIGH/CRITICAL CVEs.")
               sys.exit(1)
-
-          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues filtered)")
+          
+          print("✅ Audit passed.")
           EOF
-
+          
       # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
       - name: Run Semgrep (OWASP Top 10 rules)
         env:
