@@ -1,4 +1,4 @@
-name: Full E2E — SAST → Build → Infrastructure → Deploy
+name: Full E2E - SAST → Build → Infrastructure → Deploy
 on:
   workflow_dispatch:
     inputs:
