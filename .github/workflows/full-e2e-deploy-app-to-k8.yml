@@ -321,18 +321,13 @@ jobs:
           echo "── Service endpoints ────────────────────────────"
           kubectl get svc ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
 
-      - name: Get application URL
-        id: get-url
-        run: |
-          APP_URL=$(kubectl get svc ${{ env.HELM_RELEASE }} \
-            --namespace ${{ env.HELM_RELEASE }} \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          echo "app-url=http://${APP_URL}" >> $GITHUB_OUTPUT
-          echo "Application available at: http://${APP_URL}"
+          echo "── Deployments ────────────────────────────"
+          kubectl get deployment ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
+
 
       - name: Smoke test — health check
         run: |
-          APP_URL="${{ steps.get-url.outputs.app-url }}"
+          APP_URL=$(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)
           echo "Running smoke test against ${APP_URL}"
 
           for i in {1..5}; do
