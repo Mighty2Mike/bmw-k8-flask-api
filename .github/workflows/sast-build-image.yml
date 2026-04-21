@@ -109,20 +109,50 @@ jobs:
       # ── Safety — known CVE check on installed packages ────────────────────
       - name: Run Safety (dependency CVE audit)
         run: |
+          # 1. Clear warnings and force output to JSON
+          export PYTHONWARNINGS="ignore"
           safety check --full-report --output json > safety-report.json 2>/dev/null || true
-          # Parse and fail on high/critical CVEs
+
+          # 2. Updated Python parser to handle Safety 3.x schema
           python - <<'EOF'
-          import json, sys
-          with open("safety-report.json") as f:
-              report = json.load(f)
-          vulns = report.get("vulnerabilities", [])
-          critical = [v for v in vulns if v.get("severity", "").upper() in ("HIGH", "CRITICAL")]
-          if critical:
-              print(f"❌ {len(critical)} HIGH/CRITICAL CVEs found:")
-              for v in critical:
-                  print(f"  • {v['package_name']} {v['analyzed_version']}: {v['vulnerability_id']}")
+          import json, sys, os
+
+          try:
+              with open("safety-report.json") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"❌ Error reading report: {e}")
               sys.exit(1)
-          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues, all low/medium)")
+
+          # Safety 3.x puts vulns in data['vulnerabilities'] 
+          # Safety 2.x/older used a direct list or data['vulnerabilities']
+          vulns = data.get("vulnerabilities", []) if isinstance(data, dict) else data
+          
+          critical_issues = []
+          
+          for v in vulns:
+              # Extract severity - handles both string and object formats
+              sev_data = v.get("severity")
+              # In Safety 3.x, severity is often an object: {"source": "cvssv3", "score": 9.8, "label": "critical"}
+              severity_label = ""
+              if isinstance(sev_data, dict):
+                  severity_label = sev_data.get("label", "").upper()
+              else:
+                  severity_label = str(sev_data).upper()
+
+              if severity_label in ("HIGH", "CRITICAL"):
+                  critical_issues.append(v)
+
+          if critical_issues:
+              print(f"❌ {len(critical_issues)} HIGH/CRITICAL CVEs found:")
+              for v in critical_issues:
+                  pkg = v.get("package_name", "unknown")
+                  ver = v.get("analyzed_version", "unknown")
+                  v_id = v.get("vulnerability_id", "N/A")
+                  print(f"  • {pkg} {ver}: {v_id}")
+              sys.exit(1)
+
+          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues filtered)")
           EOF
 
       # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
