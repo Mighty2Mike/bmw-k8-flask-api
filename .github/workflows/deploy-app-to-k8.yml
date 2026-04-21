@@ -218,7 +218,7 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
-          
+
   # ===========================================================================
   # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
   # Runs AFTER image is pushed so infra can reference the new image if needed
@@ -266,7 +266,7 @@ jobs:
           kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
  
       - name: Terraform Validate
-        run: 
+        run: |
           cd ${{ env.TERRAFORM_DIR }}
           terraform validate -no-color
  

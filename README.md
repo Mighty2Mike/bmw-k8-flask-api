@@ -1,3 +1,36 @@
+## Project File Reference
+
+```
+flask-k8s-assessment/
+├── app/
+│   ├── Dockerfile              Multi-stage, non-root, gunicorn
+│   ├── requirements.txt
+│   └── src/
+│       ├── main.py             Flask app with /health, /ready, /api/v1/data, /api/v1/stress
+│       └── config.py           Env var config with production validation
+├── terraform/
+│   ├── providers.tf            Kubernetes + Helm providers pointing at Minikube
+│   ├── variables.tf            All inputs incl. sensitive vars
+│   ├── main.tf                 Namespace, ConfigMap, Secret
+│   ├── helm.tf                 Helm release resource
+│   ├── outputs.tf              Release status, resource names
+│   └── terraform.tfvars.example  Copy → terraform.tfvars, fill in secrets
+├── charts/flask-api/
+│   ├── Chart.yaml
+│   ├── values.yaml             All tunables with comments
+│   └── templates/
+│       ├── deployment.yaml     Pods, probes, rolling update, topology spread
+│       ├── service.yaml        NodePort
+│       ├── ingress.yaml        NGINX ingress
+│       ├── hpa.yaml            CPU + memory autoscaling with scale behaviour
+│       ├── vpa.yaml            Vertical right-sizing recommendations
+│       └── pdb.yaml            Minimum available pods guarantee
+├── k6/
+│   └── flood_test.js           7-stage flood test with custom metrics & thresholds
+└── README.md
+```
+---
+
 # Flask K8s Assessment — Local HA Deployment on Minikube
 
 A production-grade Flask REST API deployed onto a local Minikube cluster using
@@ -387,34 +420,3 @@ minikube delete
 
 ---
 
-## Project File Reference
-
-```
-flask-k8s-assessment/
-├── app/
-│   ├── Dockerfile              Multi-stage, non-root, gunicorn
-│   ├── requirements.txt
-│   └── src/
-│       ├── main.py             Flask app with /health, /ready, /api/v1/data, /api/v1/stress
-│       └── config.py           Env var config with production validation
-├── terraform/
-│   ├── providers.tf            Kubernetes + Helm providers pointing at Minikube
-│   ├── variables.tf            All inputs incl. sensitive vars
-│   ├── main.tf                 Namespace, ConfigMap, Secret
-│   ├── helm.tf                 Helm release resource
-│   ├── outputs.tf              Release status, resource names
-│   └── terraform.tfvars.example  Copy → terraform.tfvars, fill in secrets
-├── charts/flask-api/
-│   ├── Chart.yaml
-│   ├── values.yaml             All tunables with comments
-│   └── templates/
-│       ├── deployment.yaml     Pods, probes, rolling update, topology spread
-│       ├── service.yaml        NodePort
-│       ├── ingress.yaml        NGINX ingress
-│       ├── hpa.yaml            CPU + memory autoscaling with scale behaviour
-│       ├── vpa.yaml            Vertical right-sizing recommendations
-│       └── pdb.yaml            Minimum available pods guarantee
-├── k6/
-│   └── flood_test.js           7-stage flood test with custom metrics & thresholds
-└── README.md
-```

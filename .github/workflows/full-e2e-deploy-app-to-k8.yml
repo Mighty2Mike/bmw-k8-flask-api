@@ -259,7 +259,7 @@ jobs:
           kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
  
       - name: Terraform Validate
-        run: 
+        run: |
           cd ${{ env.TERRAFORM_DIR }}
           terraform validate -no-color
  
