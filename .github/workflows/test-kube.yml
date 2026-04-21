@@ -77,7 +77,7 @@ jobs:
       - name: Terraform Apply
         run: |
           cd terraform
-          terraform apply -auto-approve -no-color -input=false tfplan -var='enable_feature=false'
+          terraform apply -auto-approve -no-color -var='enable_feature=false'
           echo ""
           echo "── Resources in state ──────────────────────────────────"
           terraform state list 2>/dev/null || true
