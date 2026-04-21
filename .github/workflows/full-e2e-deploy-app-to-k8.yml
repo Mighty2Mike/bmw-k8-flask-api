@@ -55,7 +55,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r ./app/requirements.txt
-          pip install bandit safety semgrep
+          pip install bandit bandit-sarif-formatter safety semgrep
 
       # ── Bandit — Python AST-level security linter ─────────────────────────
       # Checks: hardcoded passwords, SQL injection, shell injection, etc.
