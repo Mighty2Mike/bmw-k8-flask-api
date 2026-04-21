@@ -6,10 +6,249 @@ on:
       - "**.md"
       - "docs/**"
       - ".gitignore"
+  workflow_dispatch:
+    inputs:
+      skip_sast:
+        description: "Skip SAST (emergency hotfix only)"
+        required: false
+        default: false
+        type: boolean
+# ─────────────────────────────────────────────────────────────────────────────
+# CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
+# Production deploys are NOT cancelled mid-flight (separate group)
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GLOBAL ENVIRONMENT — single source of truth, override per job as needed
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  DOCKER_IMAGE: michaelnthodidocker/bmw-flask-k8-assessment
+  DOCKER_TAG: ${{ github.sha }}          # Immutable tag — never use :latest as sole tag
+  DOCKER_TAG_LATEST: latest
+  PYTHON_VERSION: "3.11"
+  TERRAFORM_VERSION: "1.8.0"
+  HELM_RELEASE: bmw-gitops-flask-k8
+  HELM_CHART_PATH: ./helm/bmw-gitops-flask-k8
+  TERRAFORM_DIR: ./terraform
+
 jobs:
-  job1:
+  sast:
+    name: "🔐 SAST — Security Analysis"
     runs-on: ubuntu-latest
-    name: build discover and deploy
+    if: ${{ github.event.inputs.skip_sast != 'true' }}
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history needed for accurate diff analysis
+
+      # ── Python dependency audit ───────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r ./app/requirements.txt
+          pip install bandit safety semgrep
+
+      # ── Bandit — Python AST-level security linter ─────────────────────────
+      # Checks: hardcoded passwords, SQL injection, shell injection, etc.
+      - name: Run Bandit (Python SAST)
+        run: |
+          bandit -r . \
+            --exclude ./.venv,./tests \
+            --severity-level medium \
+            --confidence-level medium \
+            --format sarif \
+            --output bandit-results.sarif
+        continue-on-error: false   # Hard failure — pipeline stops here if issues found
+
+      - name: Upload Bandit SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()   # Upload even on failure so devs can see findings in UI
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+
+      # ── Safety — known CVE check on installed packages ────────────────────
+      - name: Run Safety (dependency CVE audit)
+        run: |
+          safety check \
+            --full-report \
+            --output json \
+            > safety-report.json || true
+          # Parse and fail on high/critical CVEs
+          python - <<'EOF'
+          import json, sys
+          with open("safety-report.json") as f:
+              report = json.load(f)
+          vulns = report.get("vulnerabilities", [])
+          critical = [v for v in vulns if v.get("severity", "").upper() in ("HIGH", "CRITICAL")]
+          if critical:
+              print(f"❌ {len(critical)} HIGH/CRITICAL CVEs found:")
+              for v in critical:
+                  print(f"  • {v['package_name']} {v['analyzed_version']}: {v['vulnerability_id']}")
+              sys.exit(1)
+          print(f"✅ No HIGH/CRITICAL CVEs. ({len(vulns)} total issues, all low/medium)")
+          EOF
+
+      # ── Semgrep — multi-rule SAST (OWASP Top 10 ruleset) ─────────────────
+      - name: Run Semgrep (OWASP Top 10 rules)
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          semgrep scan \
+            --config=p/owasp-top-ten \
+            --config=p/python \
+            --config=p/flask \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error \
+            --exclude='tests/' \
+            --exclude='.venv/'
+
+      - name: Upload Semgrep SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      # ── CodeQL — deep semantic analysis (optional but shows maturity) ─────
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-and-quality
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql
+
+      # ── Secret scanning — catch leaked credentials ─────────────────────────
+      - name: Run Gitleaks (secret detection)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Upload all SAST artifacts for audit trail ─────────────────────────
+      - name: Upload SAST reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sast-reports-${{ github.sha }}
+          path: |
+            bandit-results.sarif
+            safety-report.json
+            semgrep-results.sarif
+          retention-days: 90   # Keep 90 days for compliance/audit purposes
+
+  # ===========================================================================
+  # JOB 2: BUILD & PUSH — Docker image with supply-chain hardening
+  # ===========================================================================
+  build-and-push:
+    name: "🐳 Build & Push Docker Image"
+    runs-on: ubuntu-latest
+    needs: [sast]   # Only runs if SAST passes — enforce the gate
+    if: github.event_name != 'pull_request'   # Don't push images from PRs
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}   # Used for provenance
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── Docker Buildx for multi-platform + cache support ──────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64   # Multi-arch for flexibility
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}   # Use access token, NOT password
+
+      # ── Docker image metadata (OCI labels, tags) ──────────────────────────
+      # Produces: SHA tag (immutable) + branch tag + semver tag (if git tag)
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.title=BMW Flask K8s Assessment
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created={{date 'RFC3339'}}
+
+      # ── Hadolint — lint Dockerfile before building ────────────────────────
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      # ── Build with layer caching (GitHub Cache backend) ───────────────────
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha                   # Pull from GitHub Actions cache
+          cache-to: type=gha,mode=max            # Push back for next run
+          provenance: true                        # SLSA provenance attestation
+          sbom: true                              # Software Bill of Materials
+
+      # ── Trivy — container image vulnerability scan ────────────────────────
+      # Run AFTER build so we scan the actual image, not just the filesystem
+      - name: Run Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
+          ignore-unfixed: true     # Only fail on patchable vulnerabilities
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+  # ===========================================================================
+  # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
+  # Runs AFTER image is pushed so infra can reference the new image if needed
+  # ===========================================================================
+  deploy-infra-and-helm-chart:
+    runs-on: ubuntu-latest
+    needs: [sast, build-and-push]
+    name: "🏗️ Infra & Helm Chart Deployment on K8 cluster"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,18 +338,5 @@ jobs:
           minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url
           echo -n "------------------opening the service------------------"
           curl $(minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url)
+          echo -n "------------------opening the /api/v1/data route ------------------"
           curl $(minikube service bmw-k8-flask-api -n bmw-k8-flask-api --url)/api/v1/data
-
-      # - name: Build image
-      #   run: |
-      #     minikube image build -t local/devex:v1 .
-      # - name: Deploy to minikube
-      #   run: |
-      #     kubectl apply -f deploy/k8s.yaml
-      #     kubectl wait --for=condition=ready pod -l app=local-devex
-      # - name: Test service URLs
-      #   run: |
-      #     minikube service list
-      #     minikube service local-devex-svc --url
-      #     echo -n "------------------opening the service------------------"
-      #     curl $(minikube service local-devex-svc --url)/version
