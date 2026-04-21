@@ -1,4 +1,4 @@
-name: CD — Infrastructure → Deploy
+name: CD Pipeline — Infrastructure → Deploy
 on:
   pull_request:
     # This workflow triggers when a PR is opened against any of these branches
