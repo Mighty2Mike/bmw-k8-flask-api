@@ -1,26 +1,14 @@
 name: CI Pipeline — SAST → Build
 
 on:
-  # push:
-  #   branches: [main, develop]
-  #   paths-ignore:
-  #     - "**.md"
-  #     - "docs/**"
-  #     - ".gitignore"
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
   
   workflow_dispatch:
-    inputs:
-      environment:
-        description: "Target environment"
-        required: true
-        default: "staging"
-        type: choice
-        options: [staging, production]
-      skip_sast:
-        description: "Skip SAST (emergency hotfix only)"
-        required: false
-        default: false
-        type: boolean
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
@@ -61,7 +49,6 @@ jobs:
   sast:
     name: "🔐 SAST — Security Analysis"
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.skip_sast != 'true' }}
 
     permissions:
       contents: read
@@ -244,3 +231,31 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
+
+  # ===========================================================================
+  # JOB 3: NOTIFY — Pipeline outcome notification
+  # ===========================================================================
+  notify:
+    name: "📣 Notify Pipeline Result"
+    runs-on: ubuntu-latest
+    needs: [sast, build-and-push]
+    if: always()   # Run even if upstream jobs fail
+
+    steps:
+      - name: Determine overall status
+        id: status
+        run: |
+          if [[ "${{ needs.sast.result }}" == "failure" ]]; then
+            echo "status=❌ SAST gate failed — pipeline blocked" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.build-and-push.result }}" == "failure" ]]; then
+            echo "status=❌ Docker build/push failed" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          else
+            echo "status=✅ Full pipeline succeeded" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack notification
+        run: |
+          # TODO - SEND Notifications to Teams channel of failures (if any)

@@ -1,4 +1,4 @@
-name: Full E2E CI/CD Pipeline — SAST → Build → Infrastructure → Deploy
+name: CD Pipeline — Infrastructure → Deploy
 on:
   workflow_dispatch:
     inputs:
@@ -212,6 +212,7 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
+
   # ===========================================================================
   # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
   # Runs AFTER image is pushed so infra can reference the new image if needed
@@ -390,23 +391,5 @@ jobs:
           fi
 
       - name: Send Slack notification
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "${{ steps.status.outputs.status }}",
-              "attachments": [{
-                "color": "${{ steps.status.outputs.color }}",
-                "fields": [
-                  { "title": "Repository", "value": "${{ github.repository }}", "short": true },
-                  { "title": "Branch", "value": "${{ github.ref_name }}", "short": true },
-                  { "title": "Commit", "value": "${{ github.sha }}", "short": true },
-                  { "title": "Actor", "value": "${{ github.actor }}", "short": true },
-                  { "title": "Image", "value": "${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}", "short": false },
-                  { "title": "Run URL", "value": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}", "short": false }
-                ]
-              }]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+        run: |
+          # TODO - SEND Notifications to Teams channel of failures (if any)
