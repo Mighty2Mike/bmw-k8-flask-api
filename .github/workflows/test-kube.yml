@@ -20,6 +20,15 @@ jobs:
       - name: Try the cluster!
         run: kubectl get pods -A
 
+      - name: Install K8 addons
+        run: |
+           #Required for HPA
+           minikube addons enable metrics-server 
+           #Required for NGINX ingress  
+           minikube addons enable ingress   
+           #Required for VPA       
+           minikube addons enable vpa              
+
       - name: Checkout source FLASK API repo
         uses: actions/checkout@v4
 
