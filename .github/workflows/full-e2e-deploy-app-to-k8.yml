@@ -1,4 +1,4 @@
-name: CD Pipeline — Infrastructure → Deploy
+name: CD Pipeline — SAST → Build → Infrastructure → Deploy
 on:
   workflow_dispatch:
     inputs:
