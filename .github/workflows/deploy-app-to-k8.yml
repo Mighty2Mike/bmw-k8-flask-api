@@ -87,7 +87,7 @@ jobs:
 
       - name: Deploy BMW FLASK API Helm Chart
         run: |
-          helm upgrade --install bmw-k8-flask-api ./charts/bmw-k8-flask-api -n bmw-k8-flask-
+          helm upgrade --install bmw-k8-flask-api ./charts/bmw-k8-flask-api -n bmw-k8-flask-api
             
       - name: Test service URLs
         run: |
