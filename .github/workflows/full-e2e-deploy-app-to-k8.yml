@@ -65,7 +65,7 @@ jobs:
             --exclude ./.venv,./tests \
             --severity-level medium \
             --confidence-level medium \
-            --format yaml \
+            --format json \
             --output bandit-results.sarif
         continue-on-error: false   # Hard failure — pipeline stops here if issues found
 
@@ -223,7 +223,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG_LATEST }}
-          format: yaml
+          format: json
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"           # Fail pipeline on HIGH/CRITICAL findings
