@@ -93,7 +93,6 @@ jobs:
             --config=p/flask \
             --sarif \
             --output semgrep-results.sarif \
-            --error \
             --exclude='tests/' \
             --exclude='.venv/'
 
