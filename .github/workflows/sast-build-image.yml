@@ -1,18 +1,27 @@
-name: CD Pipeline — Infrastructure → Deploy
+name: CI Pipeline — SAST → Build
+
 on:
-  push:
-    branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".gitignore"
+  # push:
+  #   branches: [main, develop]
+  #   paths-ignore:
+  #     - "**.md"
+  #     - "docs/**"
+  #     - ".gitignore"
+  
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, production]
       skip_sast:
         description: "Skip SAST (emergency hotfix only)"
         required: false
         default: false
         type: boolean
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONCURRENCY — cancel in-flight runs on the same ref to save runner minutes
 # Production deploys are NOT cancelled mid-flight (separate group)
@@ -30,10 +39,24 @@ env:
   DOCKER_TAG_LATEST: latest
   PYTHON_VERSION: "3.11"
   TERRAFORM_VERSION: "1.8.0"
-  HELM_RELEASE: bmw-k8-flask-api
-  HELM_CHART_PATH: ./charts/bmw-k8-flask-ap
-  TERRAFORM_DIR: terraform
+  HELM_RELEASE: bmw-gitops-flask-k8
+  HELM_CHART_PATH: ./helm/bmw-gitops-flask-k8
+  TERRAFORM_DIR: ./terraform
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PERMISSIONS — principle of least privilege (PoLP)
+# Each job overrides only what it needs
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents: read
+  security-events: write   # Required for uploading SARIF to GitHub Security tab
+  packages: write
+  id-token: write          # OIDC for cloud auth (Terraform/K8s) — no long-lived keys
+
+# =============================================================================
+# JOB 1: SAST — Static Application Security Testing
+# Gate: All downstream jobs depend on this passing
+# =============================================================================
 jobs:
   sast:
     name: "🔐 SAST — Security Analysis"
@@ -241,202 +264,3 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
-  # ===========================================================================
-  # JOB 3: TERRAFORM & Helm chart — Infrastructure as Code
-  # Runs AFTER image is pushed so infra can reference the new image if needed
-  # ===========================================================================
-  deploy-infra-and-helm-chart:
-    runs-on: ubuntu-latest
-    needs: [sast, build-and-push]
-    name: "🏗️ Infra & Helm Chart Deployment on K8 cluster"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: medyagh/local-dev-example-with-minikube
-      - name: Start minikube
-        uses: medyagh/setup-minikube@latest
-      # now you can run kubectl to see the pods in the cluster
-      - name: Try the cluster!
-        run: kubectl get pods -A
-
-      - name: Install K8 addons
-        run: |
-           #Required for HPA
-           minikube addons enable metrics-server 
-           #Required for NGINX ingress  
-           minikube addons enable ingress   
-           
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: 'latest'
-
-      - name: Checkout source FLASK API repo
-        uses: actions/checkout@v4
-
-      - name: Install teraform
-        uses: hashicorp/setup-terraform@v4
-
-      - name: Deploy K8 VPA Helm Chart
-        run: |
-          # Add the repository
-          helm repo add fairwinds-stable https://charts.fairwinds.com/stable
-          helm repo update
-          
-          # Install or upgrade the chart
-          helm install my-vpa fairwinds-stable/vpa --version 1.3.1
-          kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
- 
-      - name: Terraform Validate
-        run: 
-          cd ${{ env.TERRAFORM_DIR }}
-          terraform validate -no-color
- 
-      - name: Terraform Format Check
-        run: |
-          cd ${{ env.TERRAFORM_DIR }}
-          terraform fmt -check -recursive -no-color || {
-            echo "⚠️  Auto-fixing format..."
-            terraform fmt -recursive
-          }
- 
-      - name: Terraform Plan
-        run: |
-          cd ${{ env.TERRAFORM_DIR }}
-          terraform init
-          terraform plan \
-            -no-color \
-            -out=tfplan \
-            -detailed-exitcode \
-            2>&1 | tee plan-output.txt
- 
-          EXIT=${PIPESTATUS[0]}
-          [ $EXIT -eq 0 ] && echo "✅ No changes" && exit 0
-          [ $EXIT -eq 2 ] && echo "📋 Changes detected" && exit 0
-          exit $EXIT
-
-      - name: Terraform Apply
-        run: |
-          cd ${{ env.TERRAFORM_DIR }}
-          terraform apply -auto-approve -no-color -var='enable_feature=false'
-          echo ""
-          echo "── Resources in state ──────────────────────────────────"
-          terraform state list 2>/dev/null || true
-          echo ""
-          echo "── Outputs ─────────────────────────────────────────────"
-          terraform output -no-color 2>/dev/null || echo "(no outputs defined)"
-
-      - name: Deploy BMW FLASK API Helm Chart
-        run: |
-          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} -n ${{ env.HELM_RELEASE }}
-          
-      - name: Wait for 60 seconds
-        run: sleep 60s
-
-      - name: Verify rollout
-        run: |
-          kubectl rollout status deployment/${{ env.HELM_RELEASE }} \
-            --namespace ${{ env.HELM_RELEASE }} \
-            --timeout=120s
-
-          echo "── Pod status ──────────────────────────────────"
-          kubectl get pods -l app.kubernetes.io/name=${{ env.HELM_RELEASE }} \
-            --namespace ${{ env.HELM_RELEASE }}
-
-          echo "── Service endpoints ────────────────────────────"
-          kubectl get svc ${{ env.HELM_RELEASE }} --namespace ${{ env.HELM_RELEASE }}
-
-      - name: Get application URL
-        id: get-url
-        run: |
-          APP_URL=$(kubectl get svc ${{ env.HELM_RELEASE }} \
-            --namespace ${{ env.HELM_RELEASE }} \
-            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          echo "app-url=http://${APP_URL}" >> $GITHUB_OUTPUT
-          echo "Application available at: http://${APP_URL}"
-
-      - name: Smoke test — health check
-        run: |
-          APP_URL="${{ steps.get-url.outputs.app-url }}"
-          echo "Running smoke test against ${APP_URL}"
-
-          for i in {1..5}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}/health" || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Smoke test passed — HTTP 200 from /health"
-              exit 0
-            fi
-            echo "⏳ Attempt $i/5 — got HTTP ${STATUS}, retrying in 15s..."
-            sleep 15
-          done
-
-          echo "❌ Smoke test failed after 5 attempts"
-          echo "⚠️  Triggering Helm rollback..."
-          helm rollback ${{ env.HELM_RELEASE }} --namespace default
-          exit 1
-
-      # ── Helm release summary ──────────────────────────────────────────────
-      - name: Print Helm release summary
-        if: always()
-        run: |
-          helm history ${{ env.HELM_RELEASE }} --namespace default
-
-
-      - name: Test service URLs
-        run: |
-          minikube service list
-          minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url
-          echo -n "------------------opening the service------------------"
-          curl $(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)
-          echo -n "------------------opening the /api/v1/data route ------------------"
-          curl $(minikube service ${{ env.HELM_RELEASE }} -n ${{ env.HELM_RELEASE }} --url)/api/v1/data
-
-  
-  # ===========================================================================
-  # JOB 4: NOTIFY — Pipeline outcome notification
-  # ===========================================================================
-  notify:
-    name: "📣 Notify Pipeline Result"
-    runs-on: ubuntu-latest
-    needs: [sast, build-and-push, deploy-infra-and-helm-chart]
-    if: always()   # Run even if upstream jobs fail
-
-    steps:
-      - name: Determine overall status
-        id: status
-        run: |
-          if [[ "${{ needs.sast.result }}" == "failure" ]]; then
-            echo "status=❌ SAST gate failed — pipeline blocked" >> $GITHUB_OUTPUT
-            echo "color=danger" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.build-and-push.result }}" == "failure" ]]; then
-            echo "status=❌ Docker build/push failed" >> $GITHUB_OUTPUT
-            echo "color=danger" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.deploy-infra-and-helm-chart.result }}" == "failure" ]]; then
-            echo "status=❌ Terraform apply & Helm deploy failed" >> $GITHUB_OUTPUT
-            echo "color=warning" >> $GITHUB_OUTPUT
-          else
-            echo "status=✅ Full pipeline succeeded" >> $GITHUB_OUTPUT
-            echo "color=good" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Send Slack notification
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "${{ steps.status.outputs.status }}",
-              "attachments": [{
-                "color": "${{ steps.status.outputs.color }}",
-                "fields": [
-                  { "title": "Repository", "value": "${{ github.repository }}", "short": true },
-                  { "title": "Branch", "value": "${{ github.ref_name }}", "short": true },
-                  { "title": "Commit", "value": "${{ github.sha }}", "short": true },
-                  { "title": "Actor", "value": "${{ github.actor }}", "short": true },
-                  { "title": "Image", "value": "${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}", "short": false },
-                  { "title": "Run URL", "value": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}", "short": false }
-                ]
-              }]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
